@@ -340,12 +340,14 @@ bool Session::notify_down_async(const Address& address) {
 }
 
 void Session::connect_async(const Config& config, const std::string& keyspace, const Future::Ptr& future) {
-  ScopedMutex l(&state_mutex_);
 
-  if (state_.load(MEMORY_ORDER_RELAXED) != SESSION_STATE_CLOSED) {
-    future->set_error(CASS_ERROR_LIB_UNABLE_TO_CONNECT,
-                      "Already connecting, connected or closed");
-    return;
+  {
+    ScopedMutex l(&state_mutex_);
+    if (state_.load(MEMORY_ORDER_RELAXED) != SESSION_STATE_CLOSED) {
+      future->set_error(CASS_ERROR_LIB_UNABLE_TO_CONNECT,
+                        "Already connecting, connected or closed");
+      return;
+    }
   }
 
   clear(config);
@@ -367,8 +369,11 @@ void Session::connect_async(const Config& config, const std::string& keyspace, c
 
   LOG_DEBUG("Issued connect event");
 
-  state_.store(SESSION_STATE_CONNECTING, MEMORY_ORDER_RELAXED);
-  connect_future_ = future;
+  {
+    ScopedMutex l(&state_mutex_);
+    state_.store(SESSION_STATE_CONNECTING, MEMORY_ORDER_RELAXED);
+    connect_future_ = future;
+  }
 
   if (!keyspace.empty()) {
     broadcast_keyspace_change(keyspace, NULL);
@@ -415,14 +420,16 @@ void Session::internal_close() {
 }
 
 void Session::notify_connected() {
-  ScopedMutex l(&state_mutex_);
+  {
+    ScopedMutex l(&state_mutex_);
 
-  if (state_.load(MEMORY_ORDER_RELAXED) == SESSION_STATE_CONNECTING) {
-    state_.store(SESSION_STATE_CONNECTED, MEMORY_ORDER_RELAXED);
-  }
-  if (connect_future_) {
-    connect_future_->set();
-    connect_future_.reset();
+    if (state_.load(MEMORY_ORDER_RELAXED) == SESSION_STATE_CONNECTING) {
+      state_.store(SESSION_STATE_CONNECTED, MEMORY_ORDER_RELAXED);
+    }
+    if (connect_future_) {
+      connect_future_->set();
+      connect_future_.reset();
+    }
   }
   {
     ScopedMutex lock_future(&refresh_metadata_future_mutex_);
